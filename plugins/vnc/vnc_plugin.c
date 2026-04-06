@@ -347,7 +347,11 @@ static void remmina_plugin_vnc_process_vnc_event(RemminaProtocolWidget *gp)
 			case REMMINA_PLUGIN_VNC_EVENT_CUTTEXT:
 				if (event->event_data.text.text) {
 					rfbClientLog("sending clipboard text '%s'\n", event->event_data.text.text);
-					SendClientCutText(cl, event->event_data.text.text, strlen(event->event_data.text.text));
+					/* Try UTF-8 Extended Clipboard first; fall back to Latin-1 if unsupported */
+					if (!SendClientCutTextUTF8(cl, event->event_data.text.text,
+								   strlen(event->event_data.text.text)))
+						SendClientCutText(cl, event->event_data.text.text,
+								  strlen(event->event_data.text.text));
 				}
 				break;
 			case REMMINA_PLUGIN_VNC_EVENT_CHAT_OPEN:
@@ -760,6 +764,33 @@ static gboolean remmina_plugin_vnc_queue_cuttext(RemminaPluginVncCuttextParam *p
 	return FALSE;
 }
 
+/* UTF-8 Extended Clipboard: queue handler (runs in GTK main thread) */
+static gboolean remmina_plugin_vnc_queue_cuttext_utf8(RemminaPluginVncCuttextParam *param)
+{
+	TRACE_CALL(__func__);
+	RemminaProtocolWidget *gp = param->gp;
+	RemminaPluginVncData *gpdata = GET_PLUGIN_DATA(gp);
+	GDateTime *t;
+	glong diff;
+
+	if (GTK_IS_WIDGET(gp) && gpdata->connected) {
+		t = g_date_time_new_now_utc();
+		diff = g_date_time_difference(t, gpdata->clipboard_timer) / 100000; // tenth of second
+		if (diff >= 10) {
+			g_date_time_unref(gpdata->clipboard_timer);
+			gpdata->clipboard_timer = t;
+			/* text is already UTF-8 from Extended Clipboard, set directly */
+			gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_CLIPBOARD),
+					       param->text, param->textlen);
+		} else {
+			g_date_time_unref(t);
+		}
+	}
+	g_free(param->text);
+	g_free(param);
+	return FALSE;
+}
+
 static void remmina_plugin_vnc_rfb_cuttext(rfbClient *cl, const char *text, int textlen)
 {
 	TRACE_CALL(__func__);
@@ -771,6 +802,20 @@ static void remmina_plugin_vnc_rfb_cuttext(rfbClient *cl, const char *text, int 
 	memcpy(param->text, text, textlen);
 	param->textlen = textlen;
 	IDLE_ADD((GSourceFunc)remmina_plugin_vnc_queue_cuttext, param);
+}
+
+/* UTF-8 Extended Clipboard: callback when server sends UTF-8 clipboard data */
+static void remmina_plugin_vnc_rfb_cuttext_utf8(rfbClient *cl, const char *text, int textlen)
+{
+	TRACE_CALL(__func__);
+	RemminaPluginVncCuttextParam *param;
+
+	param = g_new(RemminaPluginVncCuttextParam, 1);
+	param->gp = (RemminaProtocolWidget *)rfbClientGetClientData(cl, NULL);
+	param->text = g_malloc(textlen);
+	memcpy(param->text, text, textlen);
+	param->textlen = textlen;
+	IDLE_ADD((GSourceFunc)remmina_plugin_vnc_queue_cuttext_utf8, param);
 }
 
 static char *
@@ -1242,6 +1287,9 @@ static gboolean remmina_plugin_vnc_main(RemminaProtocolWidget *gp)
 		cl->GotXCutText = (
 			remmina_plugin_service->file_get_int(remminafile, "disableclipboard", FALSE) ?
 			NULL : remmina_plugin_vnc_rfb_cuttext);
+		cl->GotXCutTextUTF8 = (
+			remmina_plugin_service->file_get_int(remminafile, "disableclipboard", FALSE) ?
+			NULL : remmina_plugin_vnc_rfb_cuttext_utf8);
 		cl->GotCursorShape = remmina_plugin_vnc_rfb_cursor_shape;
 		cl->Bell = remmina_plugin_vnc_rfb_bell;
 		cl->HandleTextChat = remmina_plugin_vnc_rfb_chat;
@@ -1679,12 +1727,15 @@ static void remmina_plugin_vnc_on_cuttext_request(GtkClipboard *clipboard, const
 			return;
 		g_date_time_unref(gpdata->clipboard_timer);
 		gpdata->clipboard_timer = t;
-		/* Convert text from current charset to latin-1 before sending to remote server.
+		/* Push UTF-8 text directly into event queue.
+		 * The event handler will try SendClientCutTextUTF8() first (Extended Clipboard),
+		 * falling back to SendClientCutText() with Latin-1 conversion if unsupported.
 		 * See RFC6143 7.5.6 */
-		g_get_charset(&cur_charset);
-		latin1_text = g_convert_with_fallback(text, -1, "ISO-8859-1", cur_charset, "?", &br, &bw, NULL);
-		remmina_plugin_vnc_event_push(gp, REMMINA_PLUGIN_VNC_EVENT_CUTTEXT, (gpointer)latin1_text, NULL, NULL);
-		g_free(latin1_text);
+		remmina_plugin_vnc_event_push(gp, REMMINA_PLUGIN_VNC_EVENT_CUTTEXT, (gpointer)text, NULL, NULL);
+		(void)latin1_text;
+		(void)cur_charset;
+		(void)br;
+		(void)bw;
 	}
 }
 
