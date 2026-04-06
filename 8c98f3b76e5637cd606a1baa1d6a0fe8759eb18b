@@ -1,0 +1,23 @@
+plugins/vnc/vnc_plugin.c
+  d4aabed79a64be32 350-354,767-793,807-820,1290-1292,1730-1732,1734-1738
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "8c98f3b76e5637cd606a1baa1d6a0fe8759eb18b",
+  "prompts": {
+    "d4aabed79a64be32": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a863b63d-bff4-4af6-a09d-34b11f2dccc3",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "huachao01",
+      "messages": [],
+      "total_additions": 57,
+      "total_deletions": 6,
+      "accepted_lines": 57,
+      "overriden_lines": 0
+    }
+  }
+}
